@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Auto Page Layout</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@400;700&family=Noto+Sans+JP:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --page-w-mm:105;   /* 文庫A6相当: 105 x 148 mm */
+    --page-h-mm:148;
+    --bg:#fafafa; --ink:#222; --ui:#f3f3f3; --line:#e5e5e5; --accent:#3a6cf4;
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; color:var(--ink); background:var(--bg); font-family:"Noto Sans JP",system-ui,-apple-system,Segoe UI,sans-serif; }
+
+  header{
+    position:sticky; top:0; z-index:10; background:#fff; border-bottom:1px solid var(--line);
+    padding:12px 16px; display:grid; gap:10px; grid-template-columns:1fr; box-shadow:0 2px 8px rgba(0,0,0,.03);
+  }
+  .row{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .spacer{ flex:1; }
+  .badge{ display:inline-flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background:#fff; border:1px solid var(--line); }
+  .controls{ display:flex; flex-wrap:wrap; gap:10px; align-items:end; }
+  .ctrl{ background:var(--ui); border:1px solid var(--line); padding:6px 10px; border-radius:10px; display:flex; gap:8px; align-items:center; }
+  label{ font-size:12px; color:#555; }
+  input[type="number"], select{ padding:6px 8px; border-radius:6px; border:1px solid var(--line); background:#fff; }
+  button{ border:0; background:var(--accent); color:#fff; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:600; }
+  button.secondary{ background:#444; }
+  button.ghost{ background:#fff; color:#333; border:1px solid var(--line); }
+  main{ display:grid; grid-template-columns:minmax(320px, 520px) 1fr; gap:16px; padding:16px; }
+  #inputBox{ display:flex; flex-direction:column; gap:8px; }
+  textarea{ width:100%; min-height:260px; resize:vertical; padding:10px; border-radius:10px; border:1px solid var(--line); background:#fff; }
+  #pages{ display:flex; flex-wrap:wrap; gap:16px; align-content:flex-start; }
+
+  /* プレビュー用ページ（幅・高さはJSでmm→px換算して設定） */
+  .page{
+    position:relative; background:white; border:1px solid var(--line); box-shadow:0 6px 16px rgba(0,0,0,.06);
+    /* width/height は createPage() で設定 */
+  }
+  .page::after{
+    content:attr(data-pageno); position:absolute; bottom:6px; left:50%; transform:translateX(-50%);
+    color:#666; font-size:10px; font-family:"Noto Sans JP";
+  }
+  .content{ position:absolute; overflow:hidden; }
+
+  /* 本文フレーム */
+  .frame{
+    text-align: justify;               /* 両端揃え */
+    text-justify: inter-character;     /* CJKの均等割付 */
+    text-align-last: auto;
+  }
+  .serif{ font-family:"Noto Serif JP","Noto Serif",serif; }
+  .sans{  font-family:"Noto Sans JP","Noto Sans",sans-serif; }
+
+  /* 段落（縦横切替） */
+  .para.vertical{ writing-mode: vertical-rl; text-orientation: mixed; }
+  .para.horizontal{ writing-mode: horizontal-tb; }
+  .para span{ display:inline; }        /* 両端揃えを効かせるため inline */
+  .hint{ font-size:12px; color:#666; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="row">
+      <div class="badge">自動組み版システム</div>
+      <div class="spacer"></div>
+      <button id="exportBtn">PNGを一括出力</button>
+      <button id="printBtn" class="ghost">ブラウザで印刷</button>
+    </div>
+    <div class="controls">
+      <div class="ctrl"><label>書体</label>
+        <select id="fontFamily">
+          <option value="serif">Noto Serif JP（明朝）</option>
+          <option value="sans">Noto Sans JP（ゴシック）</option>
+        </select>
+      </div>
+      <div class="ctrl"><label>文字サイズ</label>
+        <input id="fontSize" type="number" value="9" min="6" max="18" step="0.5"> pt
+      </div>
+      <div class="ctrl"><label>行送り</label>
+        <input id="lineHeight" type="number" value="1.6" min="1.1" max="2.4" step="0.1">
+      </div>
+      <div class="ctrl"><label>上下余白</label>
+        <input id="marginTB" type="number" value="12" min="6" max="25" step="1"> mm
+      </div>
+      <div class="ctrl"><label>左右余白</label>
+        <input id="marginLR" type="number" value="12" min="6" max="25" step="1"> mm
+      </div>
+      <div class="ctrl"><label>綴じ代（奇数）</label>
+        <input id="gutter" type="number" value="4" min="0" max="20" step="1"> mm
+      </div>
+      <div class="ctrl"><label>縦組み</label>
+        <select id="vertical">
+          <option value="off">オフ（横組み）</option>
+          <option value="on" selected>オン（縦組み）</option>
+        </select>
+      </div>
+      <div class="ctrl"><label>ページ番号</label>
+        <select id="pageno">
+          <option value="on">表示する</option>
+          <option value="off">表示しない</option>
+        </select>
+      </div>
+      <div class="ctrl"><button id="typesetBtn" class="secondary">組み版する</button></div>
+    </div>
+  </header>
+
+  <main>
+    <section id="inputBox">
+      <label for="text">テキストを貼り付け</label>
+      <textarea id="text" placeholder="複数行の改行もそのまま反映されます（例：改行×2で空行1行）。"></textarea>
+
+      <div class="row">
+        <button id="sampleBtn" class="ghost">サンプル文を入れる</button>
+        <button id="clearBtn" class="ghost">クリア</button>
+      </div>
+    </section>
+
+    <section>
+      <div id="pages"></div>
+    </section>
+  </main>
+
+  <!-- 画像出力は html-to-image（縦組みの描画が安定） -->
+  <script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.11/dist/html-to-image.min.js"></script>
+  <script>
+  // 単位変換: mm -> px（CSS 96dpi換算）
+  const mmToPx = (mm) => (mm * (96 / 25.4));
+
+  // 禁則対象セット
+  const kinsokuHead = new Set(["、","。","・","：","；","？","！",",",".",":",";","?","!","」","』","】","）",")","]","}","ぁ","ぃ","ぅ","ぇ","ぉ","っ","ゃ","ゅ","ょ"]);
+  const kinsokuTail = new Set(["「","『","【","（","(","[","{","〈","《","〔","<","￥","$","+","-","±","＆","*","／","/"]);
+
+  const el = {
+    text:        document.getElementById('text'),
+    pages:       document.getElementById('pages'),
+    fontFamily:  document.getElementById('fontFamily'),
+    fontSize:    document.getElementById('fontSize'),
+    lineHeight:  document.getElementById('lineHeight'),
+    marginTB:    document.getElementById('marginTB'),
+    marginLR:    document.getElementById('marginLR'),
+    gutter:      document.getElementById('gutter'),
+    vertical:    document.getElementById('vertical'),
+    pageno:      document.getElementById('pageno'),
+    typesetBtn:  document.getElementById('typesetBtn'),
+    exportBtn:   document.getElementById('exportBtn'),
+    printBtn:    document.getElementById('printBtn'),
+    sampleBtn:   document.getElementById('sampleBtn'),
+    clearBtn:    document.getElementById('clearBtn'),
+  };
+
+  function getOptions(){
+    return {
+      pageWmm: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--page-w-mm')) || 105,
+      pageHmm: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--page-h-mm')) || 148,
+      marginTB: Number(el.marginTB.value || 12),
+      marginLR: Number(el.marginLR.value || 12),
+      gutter:   Number(el.gutter.value || 4),
+      vertical: el.vertical.value, // 'on'|'off'
+      fontFamily: el.fontFamily.value, // 'serif'|'sans'
+      fontSize: Number(el.fontSize.value || 9),
+      lineHeight: Number(el.lineHeight.value || 1.6),
+      showPageNo: el.pageno.value === 'on',
+    };
+  }
+
+  function clearPages(){ el.pages.innerHTML=''; }
+
+  /* ★★ 変更点：段落分割をやめ、全文を1本のストリームとして扱う ★★
+     - CRLF正規化だけ行い、そのまま配列の1要素として返す
+     - 改行は layout で <br> に変換 → 複数改行もその数だけ反映
+  */
+  function splitParagraphs(text){
+    const norm = text.replace(/\r\n?/g,"\n");
+    return [norm];
+  }
+
+  // ページDOM（mm→pxで厳密サイズ）
+  function createPage(index, opts){
+    const page = document.createElement('div'); page.className='page';
+    page.dataset.pageno = opts.showPageNo ? String(index+1) : '';
+
+    const pageW = mmToPx(opts.pageWmm);
+    const pageH = mmToPx(opts.pageHmm);
+    page.style.width  = pageW + 'px';
+    page.style.height = pageH + 'px';
+
+    const content = document.createElement('div'); content.className='content';
+
+    const marginTBpx = mmToPx(opts.marginTB);
+    const marginLRpx = mmToPx(opts.marginLR);
+    const gutterpx   = mmToPx(opts.gutter);
+    const isOdd = index % 2 === 1;
+    const left  = isOdd ? (marginLRpx + gutterpx) : marginLRpx;
+    const right = isOdd ? marginLRpx : (marginLRpx + gutterpx);
+
+    content.style.left = left + 'px';
+    content.style.top = marginTBpx + 'px';
+    content.style.right = right + 'px';
+    content.style.bottom = marginTBpx + 'px';
+
+    const frame = document.createElement('div');
+    frame.className = 'frame ' + (opts.fontFamily==='serif'?'serif':'sans');
+    frame.style.fontSize = opts.fontSize + 'pt';
+    frame.style.lineHeight = opts.lineHeight;
+    frame.style.width='100%'; frame.style.height='100%'; frame.style.overflow='hidden';
+    frame.style.hyphens='auto'; frame.style.letterSpacing = opts.vertical==='on' ? '0' : '0.02em';
+    if(opts.vertical==='on'){ frame.style.writingMode='vertical-rl'; frame.style.textOrientation='mixed'; }
+    else{ frame.style.writingMode='horizontal-tb'; frame.style.textOrientation='mixed'; }
+
+    content.appendChild(frame); page.appendChild(content);
+    return { page, frame };
+  }
+
+  // レイアウト（禁則 + ページ分割 + 改行そのまま反映）
+  function layoutParagraphs(frame, paragraphs, opts){
+    const pushParagraph = () => {
+      const paraText = paragraphs.shift();
+      const p = document.createElement('div');
+      p.className = 'para ' + (opts.vertical==='on' ? 'vertical' : 'horizontal');
+
+      const chars = [...paraText];
+      for(let i=0;i<chars.length;i++){
+        const ch = chars[i];
+
+        // 改行は強制改行（複数改行もその数だけ <br>）
+        if(ch === '\n'){
+          p.appendChild(document.createElement('br'));
+          continue;
+        }
+        // 行頭禁則
+        if(kinsokuHead.has(ch) && p.lastChild && p.lastChild.nodeName !== 'BR'){
+          p.lastChild.textContent += ch;
+          continue;
+        }
+        // 行末禁則：開きは次と結合
+        if(kinsokuTail.has(ch) && i+1<chars.length){
+          const span = document.createElement('span');
+          span.textContent = ch + chars[i+1];
+          p.appendChild(span);
+          i++;
+          continue;
+        }
+
+        const span = document.createElement('span');
+        span.textContent = ch;
+        p.appendChild(span);
+      }
+      frame.appendChild(p);
+      return p;
+    };
+
+    const over = () => (frame.scrollHeight > frame.clientHeight || frame.scrollWidth > frame.clientWidth);
+
+    while(paragraphs.length){
+      const paraEl = pushParagraph();
+      if(over()){
+        // はみ出た分を次ページへ（改行は '\n' として返す）
+        let moved = [];
+        while(over() && paraEl.lastChild){
+          const last = paraEl.lastChild;
+          if(last.nodeName === 'BR'){
+            moved.unshift('\n');
+            paraEl.removeChild(last);
+          }else{
+            moved.unshift(last.textContent);
+            paraEl.removeChild(last);
+          }
+        }
+        if(moved.length){ paragraphs.unshift(moved.join("")); }
+        break;
+      }
+    }
+  }
+
+  function typeset(){
+    clearPages();
+    const opts = getOptions();
+    const paragraphs = splitParagraphs(el.text.value);
+
+    let index = 0;
+    while(paragraphs.length){
+      const { page, frame } = createPage(index, opts);
+      el.pages.appendChild(page);
+      layoutParagraphs(frame, paragraphs, opts);
+      index++;
+      if(index>999) break; // 安全装置
+    }
+  }
+
+  // 画像出力：html-to-image（縦組みも画面通り）
+  async function exportAllPNGs(){
+    const pages = Array.from(document.querySelectorAll('.page'));
+    if(pages.length===0){ alert('先に「組み版する」を押してください。'); return; }
+
+    if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(_){} }
+
+    const pixelRatio = 2; // 解像度調整
+    for(let i=0;i<pages.length;i++){
+      try{
+        const dataUrl = await htmlToImage.toPng(pages[i], {
+          pixelRatio, cacheBust:true, style:{ backgroundColor:'#ffffff' }
+        });
+        const a = document.createElement('a');
+        a.href = dataUrl; a.download = `bunko_page_${String(i+1).padStart(3,'0')}.png`;
+        document.body.appendChild(a); a.click(); a.remove();
+      }catch(err){
+        console.error('PNG出力に失敗:', err);
+        alert(`ページ${i+1}の出力でエラー。コンソールをご確認ください。`);
+        break;
+      }
+    }
+  }
+
+  function printBrowser(){
+    const css = `@media print{
+      body{background:#fff}
+      header,#inputBox .row,#sampleBtn,#clearBtn{ display:none !important; }
+      main{ grid-template-columns:1fr; }
+      #pages{ gap:0 }
+      .page{ break-inside:avoid; page-break-inside:avoid; box-shadow:none; border:0; margin:0 auto 8mm auto}
+    }`;
+    const style = document.createElement('style'); style.textContent=css; document.head.appendChild(style);
+    window.print(); setTimeout(()=>style.remove(), 800);
+  }
+
+  function loadSample(){
+    el.text.value = `夏目漱石『こころ』より（冒頭）
+
+私はその人を常に先生と呼んでいた。
+
+だからここでもただ先生と書くだけで本名は打ち明けない。
+
+
+これは世間を憚はばかる遠慮というよりも、
+その方が私にとって自然だからである。
+
+
+
+私はその人の記憶を呼び起こすごとに、
+すぐ「先生」といいたくなる。
+筆を執とるのすら面倒な私が、
+自ら進んで先生と呼びかけたくなるほど、
+先生は私の心に深く刻みつけられているのである。`;
+  }
+
+  // イベント
+  document.getElementById('typesetBtn').addEventListener('click', typeset);
+  document.getElementById('exportBtn').addEventListener('click', exportAllPNGs);
+  document.getElementById('printBtn').addEventListener('click', printBrowser);
+  document.getElementById('sampleBtn').addEventListener('click', ()=>{ loadSample(); typeset(); });
+  document.getElementById('clearBtn').addEventListener('click', ()=>{ el.text.value=''; clearPages(); });
+
+  // 初期描画（サンプル）
+  loadSample(); typeset();
+  </script>
+</body>
+</html>
